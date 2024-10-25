@@ -24,6 +24,8 @@ from concordia.components import agent as agent_components
 from concordia.language_model import language_model
 from concordia.memory_bank import legacy_associative_memory
 from concordia.utils import measurements as measurements_lib
+from concordia.components.emotional_intelligence import EmotionalIntelligenceComponent
+from concordia.components.conflict_resolution import ConflictResolutionComponent
 
 DEFAULT_PLANNING_HORIZON = 'the rest of the day, focusing most on the near term'
 
@@ -123,6 +125,33 @@ def build_agent(
           ).on_next,
       )
   )
+  emotional_intelligence_label = ('\nEmotional Intelligence')
+  emotional_intelligence = (
+    EmotionalIntelligenceComponent(
+      model=model,
+      memory_component_name=agent_components.memory_component.DEFAULT_MEMORY_COMPONENT_NAME,
+      components={
+          _get_class_name(observation_summary): observation_summary_label,
+          _get_class_name(time_display): 'The current date/time is'},
+      clock_now=clock.now,
+      num_memories_to_retrieve=10,
+      pre_act_key=emotional_intelligence_label,
+      logging_channel=measurements.get_channel('EmotionalIntelligence').on_next,
+    )
+  )
+  conflict_resolution_label = '\nConflict Resolution'
+  conflict_resolution = ConflictResolutionComponent(
+        model=model,
+        memory_component_name=agent_components.memory_component.DEFAULT_MEMORY_COMPONENT_NAME,
+        components={
+            _get_class_name(observation_summary): observation_summary_label,
+            _get_class_name(time_display): 'The current date/time is',
+        },
+        clock_now=clock.now,
+        num_memories_to_retrieve=100,
+        pre_act_key=conflict_resolution_label,
+        logging_channel=measurements.get_channel('ConflictResolution').on_next,
+    )
   person_by_situation_label = (
       f'\nQuestion: What would a person like {agent_name} do in '
       'a situation like this?\nAnswer')
@@ -187,6 +216,8 @@ def build_agent(
       self_perception,
       situation_perception,
       person_by_situation,
+      emotional_intelligence,
+      conflict_resolution,
       plan,
       time_display,
 
