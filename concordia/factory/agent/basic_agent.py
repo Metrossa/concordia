@@ -31,6 +31,8 @@ from concordia.document import interactive_document
 from concordia.typing import entity_component, logging
 from concordia.components.agent import action_spec_ignored
 from concordia.components.agent import memory_component
+from concordia.components.agent import action_component
+from concordia.typing import entity  # Add this import at the top
 
 # from concordia.components.emotional_intelligence import EmotionalIntelligenceComponent
 # from concordia.components.conflict_resolution import ConflictResolutionComponent
@@ -54,7 +56,7 @@ from concordia.components.agent import memory_component
 DEFAULT_PRE_ACT_KEY = 'Conflict Resolution'
 
 
-class ConflictResolutionComponent(action_spec_ignored.ActionSpecIgnored):
+class ConflictResolutionComponent(action_component.ActionComponent):
   """Component that mediates conflicts and proposes compromises."""
 
   def __init__(
@@ -170,22 +172,10 @@ DEFAULT_PLANNING_HORIZON = 'the rest of the day, focusing most on the near term'
 
 """Agent evaluates emotional state of other agents based on past interactions and adjusts behavior accordingly."""
 
-# from collections.abc import Callable, Mapping, Sequence
-# import datetime
-# import types
-
-# from concordia.components.agent import action_spec_ignored
-# from concordia.components.agent import memory_component
-# from concordia.document import interactive_document
-# from concordia.language_model import language_model
-# from concordia.memory_bank import legacy_associative_memory
-# from concordia.typing import entity_component
-# from concordia.typing import logging
-
 DEFAULT_PRE_ACT_KEY = 'Emotional Intelligence'
 
 
-class EmotionalIntelligenceComponent(action_spec_ignored.ActionSpecIgnored):
+class EmotionalIntelligenceComponent(action_component.ActionComponent):
   """Component that evaluates emotional states of other agents and adjusts behavior."""
 
   def __init__(
@@ -294,6 +284,52 @@ class EmotionalIntelligenceComponent(action_spec_ignored.ActionSpecIgnored):
     return result
 
 
+class DecisionMakingComponent(action_component.ActionComponent):
+
+  def __init__(
+      self,
+      model: language_model.LanguageModel,
+      memory_component_name: str,
+      components: Mapping[entity_component.ComponentName, str],
+      clock_now: Callable[[], datetime.datetime] | None = None,
+      pre_act_key: str = 'Decision Making',
+      logging_channel: logging.LoggingChannel = logging.NoOpLoggingChannel,
+  ):
+    super().__init__(pre_act_key)
+    self._model = model
+    self._memory_component_name = memory_component_name
+    self._components = dict(components)
+    self._clock_now = clock_now or datetime.datetime.now
+    self._logging_channel = logging_channel
+
+  def _make_pre_act_value(
+      self, action_spec: entity.ActionSpec
+  ) -> str:  # Changed from entity_lib to entity
+    agent = self.get_entity()
+    memory = agent.get_component(
+        self._memory_component_name, type_=memory_component.MemoryComponent
+    )
+
+    # Get objectives and state
+    objectives = agent.get_component('ObjectivesComponent').get_objectives()
+    env_state = agent.get_component('EnvironmentStateComponent').get_state()
+
+    chain_of_thought = interactive_document.InteractiveDocument(self._model)
+    chain_of_thought.statement(
+        f'Agent: {agent.name}\n'
+        f'Objectives: {objectives}\n'
+        f'Environment: {env_state}\n'
+        f'Action spec: {action_spec}'
+    )
+
+    decision = chain_of_thought.open_question(
+        'What action should be taken?', max_tokens=150
+    )
+
+    memory.add(f'[Decision] {decision}', metadata={})
+    return decision
+
+
 def _get_class_name(object_: object) -> str:
   return object_.__class__.__name__
 
@@ -306,7 +342,7 @@ def build_agent(
     clock: game_clock.MultiIntervalClock,
     update_time_interval: datetime.timedelta,
 ) -> entity_agent_with_logging.EntityAgentWithLogging:
-  """Build an agent.
+  """Build an agent with decision making capabilities.
 
   Args:
     config: The agent config to use.
@@ -316,7 +352,7 @@ def build_agent(
     update_time_interval: Agent calls update every time this interval passes.
 
   Returns:
-    An agent.
+    An agent with decision making capabilities.
   """
   del update_time_interval
   if not config.extras.get('main_character', False):
@@ -471,7 +507,7 @@ def build_agent(
       logging_channel=measurements.get_channel('Plan').on_next,
   )
 
-  entity_components = (
+  components_of_agent = (
       # Components that provide pre_act context.
       instructions,
       observation,
@@ -479,17 +515,16 @@ def build_agent(
       relevant_memories,
       self_perception,
       situation_perception,
-      person_by_situation,
       emotional_intelligence,
       conflict_resolution,
       plan,
       time_display,
-
       # Components that do not provide pre_act context.
       identity_characteristics,
   )
-  components_of_agent = {_get_class_name(component): component
-                         for component in entity_components}
+  components_of_agent = {
+      _get_class_name(component): component for component in components_of_agent
+  }
   components_of_agent[
       agent_components.memory_component.DEFAULT_MEMORY_COMPONENT_NAME] = (
           agent_components.memory_component.MemoryComponent(raw_memory))
@@ -498,6 +533,34 @@ def build_agent(
     components_of_agent[goal_label] = overarching_goal
     # Place goal after the instructions.
     component_order.insert(1, goal_label)
+
+  # Add objectives component
+  objectives = config.extras.get('objectives', 'No specific objective.')
+  objectives_component = ObjectivesComponent(objectives=objectives)
+  components_of_agent['ObjectivesComponent'] = objectives_component
+  component_order.append('ObjectivesComponent')
+
+  # Add environment state component
+  env_component = EnvironmentStateComponent(
+      model=model,
+      memory_component_name=memory_component.DEFAULT_MEMORY_COMPONENT_NAME,
+  )
+  components_of_agent['EnvironmentStateComponent'] = env_component
+  component_order.append('EnvironmentStateComponent')
+
+  # Add decision making component
+  decision_component = DecisionMakingComponent(
+      model=model,
+      memory_component_name=memory_component.DEFAULT_MEMORY_COMPONENT_NAME,
+      components={
+          'ObjectivesComponent': 'Objectives',
+          'EnvironmentStateComponent': 'Environment',
+      },
+      clock_now=clock.now,
+      pre_act_key='Decision Making',
+  )
+  components_of_agent['DecisionMakingComponent'] = decision_component
+  component_order.append('DecisionMakingComponent')
 
   act_component = agent_components.concat_act_component.ConcatActComponent(
       model=model,
