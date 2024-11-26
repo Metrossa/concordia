@@ -505,7 +505,7 @@ def build_agent(
       component_order=component_order,
       logging_channel=measurements.get_channel('ActComponent').on_next,
   )
-
+  # t
   agent = entity_agent_with_logging.EntityAgentWithLogging(
       agent_name=agent_name,
       act_component=act_component,
